@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MAGERPOL 3D - InstancedMesh Ultimate API</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        background: #030712;
+        font-family: sans-serif;
+      }
+      canvas {
+        display: block;
+      }
+      #toggleBtn {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 10;
+        padding: 8px 14px;
+        background: #38bdf8;
+        color: #030712;
+        border: none;
+        border-radius: 4px;
+        font-weight: bold;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      #infoPanel {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 10;
+        padding: 10px 14px;
+        background: #0f172a;
+        color: #fff;
+        border: 1px solid #38bdf8;
+        border-radius: 6px;
+        font-size: 12px;
+        display: none;
+        transform: translate(-50%, -125%);
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #infoPanel h4 {
+        color: #38bdf8;
+        margin-bottom: 4px;
+      }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  </head>
+
+  <body>
+    <button id="toggleBtn">Tampilkan Kubus</button>
+    <div id="infoPanel">
+      <p id="infoText">Memuat data...</p>
+    </div>
+
+    <script>
+      const MAP_API_URL = "http://localhost:8081/api/v1/map/nodes";
+      const DETAIL_API_URL = "http://localhost:8080/api/v1/map/node";
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x030712);
+
+      const camera = new THREE.PerspectiveCamera(
+        45,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000,
+      );
+      camera.position.set(28, 22, 36);
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        powerPreference: "high-performance",
+      });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      document.body.appendChild(renderer.domElement);
+
+      const controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+
+      const clock = new THREE.Clock();
+      const GRID_SIZE = 20;
+
+      const gridPositions = [];
+      const baseBoxGeo = new THREE.BoxGeometry(1.0, 1.0, 1.0);
+      const baseEdgesGeo = new THREE.EdgesGeometry(baseBoxGeo);
+      const posAttr = baseEdgesGeo.attributes.position;
+
+      for (let x = -GRID_SIZE; x <= GRID_SIZE; x++) {
+        for (let y = -GRID_SIZE; y <= GRID_SIZE; y++) {
+          for (let z = -GRID_SIZE; z <= GRID_SIZE; z++) {
+            for (let i = 0; i < posAttr.count; i++) {
+              gridPositions.push(
+                posAttr.getX(i) + x,
+                posAttr.getY(i) + y,
+                posAttr.getZ(i) + z,
+              );
+            }
+          }
+        }
+      }
+
+      const singleGridGeo = new THREE.BufferGeometry();
+      singleGridGeo.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(gridPositions, 3),
+      );
+      const lineMat = new THREE.LineBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.05,
+      });
+      const gridMesh = new THREE.LineSegments(singleGridGeo, lineMat);
+      gridMesh.visible = false;
+      scene.add(gridMesh);
+
+      const ringGeo = new THREE.RingGeometry(0.5, 0.56, 16);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.85,
+      });
+      const selectionRing = new THREE.Mesh(ringGeo, ringMat);
+      selectionRing.rotation.x = Math.PI / 2;
+      selectionRing.visible = false;
+      scene.add(selectionRing);
+
+      const baseGeo = new THREE.SphereGeometry(0.48, 14, 14);
+      const patrolGeo = new THREE.SphereGeometry(0.08, 8, 8);
+
+      const baseMat = new THREE.MeshBasicMaterial({ color: 0xff4757 });
+      const tambangMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+
+      const LEVEL_SCALES = { 1: 0.35, 2: 0.55, 3: 0.75, 4: 1.0 };
+
+      const clickableObjects = [];
+      const activePatrols = [];
+
+      // Variabel Global untuk InstancedMesh Patroli
+      let patrolBaseInstanced, patrolTambangInstanced;
+      // Object3D bantuan untuk menghitung matrix posisi
+      const dummy = new THREE.Object3D();
+      // Menyimpan data node yang sedang diklik
+      let selectedNodeData = null;
+
+      // --- WEBSOCKET ELIXIR (LALU LINTAS) ---
+      const trafficSocket = new WebSocket(
+        "ws://127.0.0.1:4000/socket/websocket?vsn=2.0.0",
+      );
+      const activeRoutes = [];
+
+      const fleetGeo = new THREE.SphereGeometry(0.14, 10, 10);
+      const fleetMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
+      const dashedLineMat = new THREE.LineDashedMaterial({
+        color: 0x00ffcc,
+        dashSize: 0.3,
+        gapSize: 0.2,
+        transparent: true,
+        opacity: 0.6,
+      });
+
+      trafficSocket.onopen = () =>
+        trafficSocket.send(
+          JSON.stringify(["1", "1", "traffic:lobby", "phx_join", {}]),
+        );
+      trafficSocket.onmessage = (event) => {
+        const [joinRef, ref, topic, eventName, payload] = JSON.parse(
+          event.data,
+        );
+        if (eventName === "new_route") {
+          const fromVec = new THREE.Vector3(
+            payload.from.x,
+            payload.from.y,
+            payload.from.z,
+          );
+          const toVec = new THREE.Vector3(
+            payload.to.x,
+            payload.to.y,
+            payload.to.z,
+          );
+
+          const fleetMesh = new THREE.Mesh(fleetGeo, fleetMat);
+          scene.add(fleetMesh);
+
+          const lineGeo = new THREE.BufferGeometry().setFromPoints([
+            fromVec,
+            toVec,
+          ]);
+          const lineMesh = new THREE.Line(lineGeo, dashedLineMat);
+          lineMesh.computeLineDistances();
+          scene.add(lineMesh);
+
+          activeRoutes.push({
+            fleet: fleetMesh,
+            line: lineMesh,
+            from: fromVec,
+            to: toVec,
+            startTime: payload.start_time,
+            durationMs: payload.duration * 1000,
+          });
+        }
+      };
+
+      window.triggerRoute = function (fromXYZ, toXYZ, durationSec = 5) {
+        if (trafficSocket.readyState !== WebSocket.OPEN) return;
+        trafficSocket.send(
+          JSON.stringify([
+            "1",
+            "2",
+            "traffic:lobby",
+            "send_route",
+            { from: fromXYZ, to: toXYZ, duration: durationSec },
+          ]),
+        );
+      };
+
+      function updateTrafficRoutes() {
+        const now = Date.now();
+        for (let i = activeRoutes.length - 1; i >= 0; i--) {
+          const route = activeRoutes[i];
+          const progress = Math.min(
+            (now - route.startTime) / route.durationMs,
+            1.0,
+          );
+          route.fleet.position.lerpVectors(route.from, route.to, progress);
+          if (progress >= 1.0) {
+            scene.remove(route.fleet);
+            scene.remove(route.line);
+            route.line.geometry.dispose();
+            activeRoutes.splice(i, 1);
+          }
+        }
+      }
+
+      // --- MENGAMBIL DATA & MEMBUAT INSTANCED MESH ---
+      async function loadMapNodes() {
+        try {
+          // Sesuaikan filter minX-maxZ atau hapus sama sekali jika ingin render semua
+          const response = await fetch(
+            `${MAP_API_URL}?minX=-50&maxX=50&minY=-50&maxY=50&minZ=-50&maxZ=50`,
+          );
+          const nodes = await response.json();
+
+          // 1. Kalkulasi jumlah tiap tipe untuk alokasi memori InstancedMesh yang presisi
+          let countBase = 0,
+            countTambang = 0;
+          let countPatrolBase = 0,
+            countPatrolTambang = 0;
+
+          nodes.forEach((data) => {
+            const [id, x, y, z, level, type, patrols] = data;
+            if (type === 1) {
+              countTambang++;
+              countPatrolTambang += patrols;
+            } else {
+              countBase++;
+              countPatrolBase += patrols;
+            }
+          });
+
+          // 2. Inisialisasi InstancedMesh Utama (Planet)
+          const baseInstanced = new THREE.InstancedMesh(
+            baseGeo,
+            baseMat,
+            countBase,
+          );
+          const tambangInstanced = new THREE.InstancedMesh(
+            baseGeo,
+            tambangMat,
+            countTambang,
+          );
+          // Kita butuh tempat menyimpan userData (id, x,y,z) untuk deteksi klik per instansi
+          baseInstanced.userData.nodes = [];
+          tambangInstanced.userData.nodes = [];
+
+          // 3. Inisialisasi InstancedMesh Patroli
+          patrolBaseInstanced = new THREE.InstancedMesh(
+            patrolGeo,
+            baseMat,
+            countPatrolBase,
+          );
+          patrolTambangInstanced = new THREE.InstancedMesh(
+            patrolGeo,
+            tambangMat,
+            countPatrolTambang,
+          );
+
+          let idxBase = 0,
+            idxTambang = 0;
+          let idxPBase = 0,
+            idxPTambang = 0;
+
+          nodes.forEach((data) => {
+            const [id, x, y, z, level, type, patrols] = data;
+            const scaleFactor = LEVEL_SCALES[level] || 1;
+
+            // Hitung transformasi matrix 3D lokal menggunakan object Dummy
+            dummy.position.set(x, y, z);
+            dummy.scale.setScalar(scaleFactor);
+            dummy.updateMatrix();
+
+            // Memasukkan matrix ke Mesh gabungan berdasarkan tipe
+            if (type === 1) {
+              tambangInstanced.setMatrixAt(idxTambang, dummy.matrix);
+              tambangInstanced.userData.nodes[idxTambang] = {
+                id,
+                x,
+                y,
+                z,
+                scaleFactor,
+              };
+              idxTambang++;
+            } else {
+              baseInstanced.setMatrixAt(idxBase, dummy.matrix);
+              baseInstanced.userData.nodes[idxBase] = {
+                id,
+                x,
+                y,
+                z,
+                scaleFactor,
+              };
+              idxBase++;
+            }
+
+            // Persiapan Data Kalkulasi Animasi Patroli
+            if (patrols > 0) {
+              for (let p = 0; p < patrols; p++) {
+                activePatrols.push({
+                  isTambang: type === 1,
+                  index: type === 1 ? idxPTambang++ : idxPBase++,
+                  baseX: x,
+                  baseY: y,
+                  baseZ: z,
+                  speed: 0.5 + p * 0.2,
+                  radius: (1.2 + p * 0.3) * scaleFactor,
+                  tilt: p * 0.3,
+                  offset: p * Math.PI,
+                });
+              }
+            }
+          });
+
+          scene.add(baseInstanced, tambangInstanced);
+          if (countPatrolBase > 0) scene.add(patrolBaseInstanced);
+          if (countPatrolTambang > 0) scene.add(patrolTambangInstanced);
+
+          // Masukkan ke array raycaster untuk dideteksi saat klik
+          clickableObjects.push(baseInstanced, tambangInstanced);
+        } catch (err) {
+          console.error("Gagal memuat data InstancedMesh:", err);
+        }
+      }
+
+      // --- LOGIKA KLIK INSTANCED MESH ---
+      const raycaster = new THREE.Raycaster();
+      const mouse = new THREE.Vector2();
+      const infoPanel = document.getElementById("infoPanel");
+      const infoText = document.getElementById("infoText");
+
+      window.addEventListener("click", async (e) => {
+        if (e.target.tagName === "BUTTON") return;
+        mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(clickableObjects);
+
+        if (intersects.length > 0) {
+          const intersect = intersects[0];
+
+          // Pada InstancedMesh, raycaster akan mengembalikan 'instanceId' spesifik yang diklik
+          selectedNodeData =
+            intersect.object.userData.nodes[intersect.instanceId];
+          if (!selectedNodeData) return;
+
+          const { id, x, y, z, scaleFactor } = selectedNodeData;
+
+          selectionRing.position.set(x, y, z);
+          selectionRing.scale.setScalar(scaleFactor);
+          selectionRing.visible = true;
+
+          infoText.innerHTML = "Memuat detail...";
+          infoPanel.style.display = "block";
+
+          try {
+            const res = await fetch(`${DETAIL_API_URL}?id=${id}`);
+            if (!res.ok) throw new Error("Data tidak ditemukan");
+            const detail = await res.json();
+
+            infoText.innerHTML = `
+                        <h4>${detail.name}</h4>
+                        <b>Tipe:</b> ${detail.type_name}<br>
+                        <b>Pemilik:</b> ${detail.owner}<br>
+                        <b>Poin Wilayah:</b> ${detail.points} pts<br>
+                        <b>Info:</b> ${detail.description}<br>
+                        <b>Koordinat:</b> (${x}, ${y}, ${z})
+                    `;
+          } catch (err) {
+            infoText.innerHTML = "Gagal mengambil data detail dari server.";
+          }
+        } else {
+          selectedNodeData = null;
+          selectionRing.visible = false;
+          infoPanel.style.display = "none";
+        }
+      });
+
+      const toggleBtn = document.getElementById("toggleBtn");
+      toggleBtn.addEventListener("click", () => {
+        gridMesh.visible = !gridMesh.visible;
+        toggleBtn.innerText = gridMesh.visible
+          ? "Sembunyikan Kubus"
+          : "Tampilkan Kubus";
+      });
+
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      // --- LOOP ANIMASI ---
+      function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        const elapsedTime = clock.getElapsedTime();
+
+        if (selectionRing.visible) {
+          selectionRing.rotation.z = elapsedTime * 0.8;
+        }
+
+        // Kalkulasi Matriks Patroli yang disatukan
+        dummy.scale.setScalar(1); // Kembalikan skala dummy ke 1 (Planet mengubahnya sebelumnya)
+        for (let i = 0; i < activePatrols.length; i++) {
+          const p = activePatrols[i];
+          const time = elapsedTime * p.speed + p.offset;
+
+          dummy.position.x = p.baseX + Math.cos(time) * p.radius;
+          dummy.position.z = p.baseZ + Math.sin(time) * p.radius;
+          dummy.position.y = p.baseY + Math.sin(time * 1.5) * p.tilt;
+          dummy.updateMatrix();
+
+          // Tulis ulang posisi armada langsung ke memori GPU InstancedMesh
+          if (p.isTambang) {
+            patrolTambangInstanced.setMatrixAt(p.index, dummy.matrix);
+          } else {
+            patrolBaseInstanced.setMatrixAt(p.index, dummy.matrix);
+          }
+        }
+
+        // Beritahu Three.js bahwa InstancedMesh patroli telah bergerak dan perlu di-render ulang
+        if (patrolBaseInstanced)
+          patrolBaseInstanced.instanceMatrix.needsUpdate = true;
+        if (patrolTambangInstanced)
+          patrolTambangInstanced.instanceMatrix.needsUpdate = true;
+
+        updateTrafficRoutes();
+
+        // Proyeksi UI Panel karena kita tidak lagi menggunakan Object Mesh mandiri
+        if (selectedNodeData) {
+          const vector = new THREE.Vector3(
+            selectedNodeData.x,
+            selectedNodeData.y,
+            selectedNodeData.z,
+          );
+          vector.project(camera);
+
+          if (vector.z > 1) {
+            infoPanel.style.display = "none";
+          } else {
+            infoPanel.style.display = "block";
+            infoPanel.style.left = `${(vector.x * 0.5 + 0.5) * window.innerWidth}px`;
+            infoPanel.style.top = `${(-(vector.y * 0.5) + 0.5) * window.innerHeight}px`;
+          }
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      loadMapNodes();
+      animate();
+    </script>
+  </body>
+</html>

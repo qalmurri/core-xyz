@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MAGERPOL 3D - Connected API</title>
+    <title>MAGERPOL 3D - Microservices API</title>
     <style>
       * {
         margin: 0;
@@ -24,7 +24,6 @@
         display: block;
       }
 
-      /* Tombol toggle grid di posisi kiri atas */
       #toggleBtn {
         position: absolute;
         top: 16px;
@@ -40,7 +39,6 @@
         cursor: pointer;
       }
 
-      /* Panel UI melayang 2D yang posisinya diproyeksikan dari koordinat 3D */
       #infoPanel {
         position: absolute;
         top: 0;
@@ -63,7 +61,6 @@
         margin-bottom: 4px;
       }
     </style>
-    <!-- Memuat library Three.js dan OrbitControls dari CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   </head>
@@ -75,13 +72,13 @@
     </div>
 
     <script>
-      const API_BASE_URL = "http://localhost:8080/api/v1/map"; // URL endpoint backend Go
+      // Memisahkan URL Endpoint berdasarkan Arsitektur Microservices
+      const MAP_API_URL = "http://localhost:8081/api/v1/map/nodes"; // Backend 1 (Port 8081)
+      const DETAIL_API_URL = "http://localhost:8080/api/v1/map/node"; // Backend 2 (Port 8080)
 
-      // Inisialisasi scene Three.js dengan latar belakang gelap
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x030712);
 
-      // Setting kamera perspektif dengan sudut pandang 45 derajat
       const camera = new THREE.PerspectiveCamera(
         45,
         window.innerWidth / window.innerHeight,
@@ -90,7 +87,6 @@
       );
       camera.position.set(28, 22, 36);
 
-      // Setting WebGL Renderer dengan opsi performa tinggi
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
         powerPreference: "high-performance",
@@ -99,15 +95,13 @@
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       document.body.appendChild(renderer.domElement);
 
-      // Inisialisasi OrbitControls untuk kontrol rotasi dan zoom kamera
       const controls = new THREE.OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
       controls.dampingFactor = 0.05;
 
       const clock = new THREE.Clock();
-      const GRID_SIZE = 10;
+      const GRID_SIZE = 20;
 
-      // Menggabungkan ribuan garis kubus grid menjadi 1 BufferGeometry tunggal untuk 1 draw call
       const gridPositions = [];
       const baseBoxGeo = new THREE.BoxGeometry(1.0, 1.0, 1.0);
       const baseEdgesGeo = new THREE.EdgesGeometry(baseBoxGeo);
@@ -138,10 +132,9 @@
         opacity: 0.05,
       });
       const gridMesh = new THREE.LineSegments(singleGridGeo, lineMat);
-      gridMesh.visible = false; // Sembunyikan grid secara default
+      gridMesh.visible = false;
       scene.add(gridMesh);
 
-      // Membuat cincin indikator seleksi yang akan muncul di sekitar planet yang diklik
       const ringGeo = new THREE.RingGeometry(0.5, 0.56, 16);
       const ringMat = new THREE.MeshBasicMaterial({
         color: 0x38bdf8,
@@ -154,36 +147,32 @@
       selectionRing.visible = false;
       scene.add(selectionRing);
 
-      // Reuse geometri dasar untuk menghemat alokasi memori GPU
       const baseGeo = new THREE.SphereGeometry(0.48, 14, 14);
-      const baseMat = new THREE.MeshBasicMaterial({ color: 0xff4757 }); // Merah untuk base/desa
-      const tambangMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b }); // Emas/Oranye untuk tambang
+      const baseMat = new THREE.MeshBasicMaterial({ color: 0xff4757 });
+      const tambangMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
       const patrolGeo = new THREE.SphereGeometry(0.08, 8, 8);
 
-      // Pemetaan skala ukuran berdasarkan level node (Level 4 pas seukuran kubus)
       const LEVEL_SCALES = { 1: 0.35, 2: 0.55, 3: 0.75, 4: 1.0 };
       const materialCache = {};
 
-      // Fungsi caching material patroli untuk menghindari pembuatan material berulang
-      function getPatrolMaterial(hexColor) {
-        if (!materialCache[hexColor]) {
-          materialCache[hexColor] = new THREE.MeshBasicMaterial({
-            color: parseInt(hexColor, 16),
+      function getPatrolMaterial(colorValue) {
+        if (!materialCache[colorValue]) {
+          materialCache[colorValue] = new THREE.MeshBasicMaterial({
+            color: colorValue,
           });
         }
-        return materialCache[hexColor];
+        return materialCache[colorValue];
       }
 
       const clickableObjects = [];
       const activePatrols = [];
 
-      // --- WEBSOCKET ELIXIR (LALU LINTAS & ARMADA) ---
+      // --- WEBSOCKET ELIXIR (LALU LINTAS) ---
       const trafficSocket = new WebSocket(
         "ws://127.0.0.1:4000/socket/websocket?vsn=2.0.0",
-      ); // Koneksi ke Elixir
-      const activeRoutes = []; // Array penampung rute lalu lintas aktif
+      );
+      const activeRoutes = [];
 
-      // Mesh armada (bola cyan) & Material Garis Titik-Titik (Dashed Line)
       const fleetGeo = new THREE.SphereGeometry(0.14, 10, 10);
       const fleetMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
       const dashedLineMat = new THREE.LineDashedMaterial({
@@ -201,7 +190,7 @@
           "traffic:lobby",
           "phx_join",
           {},
-        ]); // Join channel Elixir
+        ]);
         trafficSocket.send(joinMsg);
       };
 
@@ -221,17 +210,15 @@
             payload.to.z,
           );
 
-          // 1. Buat Mesh Armada yang berjalan di sepanjang rute
           const fleetMesh = new THREE.Mesh(fleetGeo, fleetMat);
           scene.add(fleetMesh);
 
-          // 2. Buat Garis Titik-Titik dari Node A ke Node B
           const lineGeo = new THREE.BufferGeometry().setFromPoints([
             fromVec,
             toVec,
           ]);
           const lineMesh = new THREE.Line(lineGeo, dashedLineMat);
-          lineMesh.computeLineDistances(); // Diperlukan agar pola garis titik-titik teralkulasi dengan benar
+          lineMesh.computeLineDistances();
           scene.add(lineMesh);
 
           activeRoutes.push({
@@ -245,7 +232,6 @@
         }
       };
 
-      // Fungsi Global untuk memicu rute via browser command console
       window.triggerRoute = function (fromXYZ, toXYZ, durationSec = 5) {
         if (trafficSocket.readyState !== WebSocket.OPEN) {
           console.warn("WebSocket Elixir belum terhubung!");
@@ -257,79 +243,102 @@
           "traffic:lobby",
           "send_route",
           { from: fromXYZ, to: toXYZ, duration: durationSec },
-        ]); // Mengirim data koordinat ke backend Elixir
+        ]);
         trafficSocket.send(pushMsg);
       };
 
-      // Memperbarui posisi armada & menghapus objek garis setelah sampai di tujuan
       function updateTrafficRoutes() {
         const now = Date.now();
         for (let i = activeRoutes.length - 1; i >= 0; i--) {
           const route = activeRoutes[i];
           const elapsed = now - route.startTime;
-          const progress = Math.min(elapsed / route.durationMs, 1.0); // Progres perjalanan 0.0 sampai 1.0
+          const progress = Math.min(elapsed / route.durationMs, 1.0);
 
-          // Lerp posisi armada dari asal ke tujuan
           route.fleet.position.lerpVectors(route.from, route.to, progress);
 
           if (progress >= 1.0) {
-            scene.remove(route.fleet); // Hapus mesh armada dari scene
-            scene.remove(route.line); // Hapus garis titik-titik dari scene
-            route.line.geometry.dispose(); // Bersihkan memori GPU
+            scene.remove(route.fleet);
+            scene.remove(route.line);
+            route.line.geometry.dispose();
             activeRoutes.splice(i, 1);
           }
         }
       }
 
-      // Memanggil API backend Go untuk mendapatkan daftar node di dalam map
+      // --- MENGAMBIL DATA 1D ARRAY DARI BACKEND 1 (PORT 8081) ---
       async function loadMapNodes() {
         try {
           const response = await fetch(
-            `${API_BASE_URL}/nodes?minX=-10&maxX=10&minY=-10&maxY=10&minZ=-10&maxZ=10`,
+            `${MAP_API_URL}?minX=-10&maxX=10&minY=-10&maxY=10&minZ=-10&maxZ=10`,
           );
           const nodes = await response.json();
 
           nodes.forEach((data) => {
-            const mat = data.type === "tambang" ? tambangMat : baseMat;
+            // Destructuring array murni: [id, x, y, z, level, type, patrols]
+            const [id, x, y, z, level, type, patrols] = data;
+
+            // Logika material: 1 = tambang, 0 = base
+            const mat = type === 1 ? tambangMat : baseMat;
             const nodeMesh = new THREE.Mesh(baseGeo, mat);
-            nodeMesh.position.set(data.x, data.y, data.z);
+            nodeMesh.position.set(x, y, z);
 
-            const scaleFactor = LEVEL_SCALES[data.level];
-            nodeMesh.scale.setScalar(scaleFactor); // Set skala objek berdasarkan levelnya
+            const scaleFactor = LEVEL_SCALES[level] || 1;
+            nodeMesh.scale.setScalar(scaleFactor);
 
+            // Menyimpan koordinat XYZ di userData agar tidak perlu fetch ulang saat diklik
             nodeMesh.userData = {
-              id: data.id,
+              id: id,
               scaleFactor: scaleFactor,
+              x: x,
+              y: y,
+              z: z,
             };
 
             scene.add(nodeMesh);
-            clickableObjects.push(nodeMesh); // Masukkan ke daftar objek yang bisa diraycast/klik
+            clickableObjects.push(nodeMesh);
 
-            if (data.patrols) {
-              data.patrols.forEach((pData) => {
+            // Procedural Rendering untuk Patroli
+            if (patrols > 0) {
+              for (let p = 0; p < patrols; p++) {
+                const pColor = type === 1 ? 0xf59e0b : 0xff4757;
+
+                // Radius kita lebarkan sedikit untuk tiap armada tambahan agar tidak saling tabrak
+                const pRadius = (1.2 + p * 0.3) * scaleFactor;
+
+                // Variasi kecepatan
+                const pSpeed = 0.5 + p * 0.2;
+
+                // PERBAIKAN: Tilt (gelombang vertikal) cukup pakai angka kecil (0.3), BUKAN 15!
+                const pTilt = p * 0.3;
+
+                // Tambahkan offset sudut agar armada 1 dan 2 posisinya berseberangan (180 derajat)
+                const pOffset = p * Math.PI;
+
                 const patrolMesh = new THREE.Mesh(
                   patrolGeo,
-                  getPatrolMaterial(pData.color),
+                  getPatrolMaterial(pColor),
                 );
+
                 activePatrols.push({
                   mesh: patrolMesh,
-                  baseX: data.x,
-                  baseY: data.y,
-                  baseZ: data.z,
-                  speed: pData.speed,
-                  radius: pData.radius * scaleFactor,
-                  tilt: pData.tilt || 0,
+                  baseX: x,
+                  baseY: y,
+                  baseZ: z,
+                  speed: pSpeed,
+                  radius: pRadius,
+                  tilt: pTilt,
+                  offset: pOffset, // <--- Simpan offset
                 });
+
                 scene.add(patrolMesh);
-              });
+              }
             }
           });
         } catch (err) {
-          console.error("Gagal memuat data peta dari server Go:", err);
+          console.error("Gagal memuat data peta dari Backend 1 (8081):", err);
         }
       }
 
-      // Raycaster dan event handler untuk mendeteksi klik pemain pada objek 3D (Murni Info Detail)
       const raycaster = new THREE.Raycaster();
       const mouse = new THREE.Vector2();
       const infoPanel = document.getElementById("infoPanel");
@@ -337,9 +346,8 @@
       let selectedNodeMesh = null;
 
       window.addEventListener("click", async (e) => {
-        if (e.target.tagName === "BUTTON") return; // Abaikan klik jika yang diklik adalah tombol UI
+        if (e.target.tagName === "BUTTON") return;
 
-        // Konversi koordinat klik mouse ke Normalized Device Coordinates (-1 sampai 1)
         mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
         mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
 
@@ -350,7 +358,9 @@
           selectedNodeMesh = intersects[0].object;
           const nodeId = selectedNodeMesh.userData.id;
 
-          // Atur posisi dan skala cincin seleksi sesuai node yang dipilih
+          // Mengambil posisi dari userData lokal untuk ditampilkan di UI
+          const { x, y, z } = selectedNodeMesh.userData;
+
           selectionRing.position.copy(selectedNodeMesh.position);
           selectionRing.scale.setScalar(selectedNodeMesh.userData.scaleFactor);
           selectionRing.visible = true;
@@ -358,21 +368,28 @@
           infoText.innerHTML = "Memuat detail...";
           infoPanel.style.display = "block";
 
-          // On-demand fetch ke endpoint detail backend Go saat planet diklik
+          // --- MENGAMBIL DATA DETAIL DARI BACKEND 2 (PORT 8080) ---
           try {
-            const res = await fetch(`${API_BASE_URL}/node?id=${nodeId}`);
+            const res = await fetch(`${DETAIL_API_URL}?id=${nodeId}`);
+
+            // Pencegahan panel morat-marit jika ID tidak ditemukan di Backend 2
+            if (!res.ok) {
+              throw new Error("Data tidak ditemukan");
+            }
+
             const detail = await res.json();
 
+            // Struktur UI yang disesuaikan dengan response JSON Backend 2
             infoText.innerHTML = `
                         <h4>${detail.name}</h4>
-                        <b>Tipe:</b> ${detail.type === "tambang" ? "Tambang Sumber Daya" : "Desa Base"}<br>
+                        <b>Tipe:</b> ${detail.type_name}<br>
                         <b>Pemilik:</b> ${detail.owner}<br>
                         <b>Poin Wilayah:</b> ${detail.points} pts<br>
-                        <b>Level Ukuran:</b> Level ${detail.level} / 4<br>
-                        <b>Koordinat:</b> (${detail.x}, ${detail.y}, ${detail.z})
+                        <b>Info:</b> ${detail.description}<br>
+                        <b>Koordinat:</b> (${x}, ${y}, ${z})
                     `;
           } catch (err) {
-            infoText.innerHTML = "Gagal mengambil data detail.";
+            infoText.innerHTML = "Gagal mengambil data detail dari server.";
           }
         } else {
           selectedNodeMesh = null;
@@ -381,7 +398,6 @@
         }
       });
 
-      // Handler tombol toggle untuk menampilkan/menyembunyikan grid kubus
       const toggleBtn = document.getElementById("toggleBtn");
       toggleBtn.addEventListener("click", () => {
         gridMesh.visible = !gridMesh.visible;
@@ -390,44 +406,43 @@
           : "Tampilkan Kubus";
       });
 
-      // Menyesuaikan rasio kamera saat ukuran window browser berubah
       window.addEventListener("resize", () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
-      // Loop animasi utama untuk pergerakan kamera, rotasi patroli, lalu lintas armada, dan posisi UI
       function animate() {
         requestAnimationFrame(animate);
         controls.update();
 
         const elapsedTime = clock.getElapsedTime();
 
-        // Memutar cincin seleksi jika sedang aktif
         if (selectionRing.visible) {
           selectionRing.rotation.z = elapsedTime * 0.8;
         }
 
-        // Mengalkulasi rotasi orbit unit patroli secara lokal di browser
         for (let i = 0; i < activePatrols.length; i++) {
           const p = activePatrols[i];
-          const time = elapsedTime * p.speed;
+
+          // PERBAIKAN: Waktu ditambah offset agar posisi awalnya berbeda
+          const time = elapsedTime * p.speed + p.offset;
+
           p.mesh.position.x = p.baseX + Math.cos(time) * p.radius;
           p.mesh.position.z = p.baseZ + Math.sin(time) * p.radius;
+
+          // Gelombang naik-turun sekarang sangat halus dan dekat dengan planet
           p.mesh.position.y = p.baseY + Math.sin(time * 1.5) * p.tilt;
         }
 
-        // Update animasi armada & garis titik-titik dari Elixir
         updateTrafficRoutes();
 
-        // Memproyeksikan koordinat 3D planet yang dipilih ke posisi piksel 2D di layar
         if (selectedNodeMesh) {
           const vector = selectedNodeMesh.position.clone();
           vector.project(camera);
 
           if (vector.z > 1) {
-            infoPanel.style.display = "none"; // Sembunyikan UI jika planet ada di belakang kamera
+            infoPanel.style.display = "none";
           } else {
             infoPanel.style.display = "block";
             infoPanel.style.left = `${(vector.x * 0.5 + 0.5) * window.innerWidth}px`;
