@@ -265,12 +265,11 @@
         }
       }
 
-      // --- MENGAMBIL DATA 1D ARRAY DARI BACKEND 1 (PORT 8081) ---
+      // --- MENGAMBIL SELURUH DATA 1D ARRAY DARI BACKEND 1 ---
       async function loadMapNodes() {
         try {
-          const response = await fetch(
-            `${MAP_API_URL}?minX=-10&maxX=10&minY=-10&maxY=10&minZ=-10&maxZ=10`,
-          );
+          // Menghapus parameter ?minX=... agar memuat 1000 planet sekaligus
+          const response = await fetch(MAP_API_URL);
           const nodes = await response.json();
 
           nodes.forEach((data) => {
@@ -308,7 +307,7 @@
                 // Variasi kecepatan
                 const pSpeed = 0.5 + p * 0.2;
 
-                // PERBAIKAN: Tilt (gelombang vertikal) cukup pakai angka kecil (0.3), BUKAN 15!
+                // Tilt (gelombang vertikal)
                 const pTilt = p * 0.3;
 
                 // Tambahkan offset sudut agar armada 1 dan 2 posisinya berseberangan (180 derajat)
@@ -327,7 +326,7 @@
                   speed: pSpeed,
                   radius: pRadius,
                   tilt: pTilt,
-                  offset: pOffset, // <--- Simpan offset
+                  offset: pOffset, 
                 });
 
                 scene.add(patrolMesh);
@@ -425,13 +424,10 @@
         for (let i = 0; i < activePatrols.length; i++) {
           const p = activePatrols[i];
 
-          // PERBAIKAN: Waktu ditambah offset agar posisi awalnya berbeda
           const time = elapsedTime * p.speed + p.offset;
 
           p.mesh.position.x = p.baseX + Math.cos(time) * p.radius;
           p.mesh.position.z = p.baseZ + Math.sin(time) * p.radius;
-
-          // Gelombang naik-turun sekarang sangat halus dan dekat dengan planet
           p.mesh.position.y = p.baseY + Math.sin(time * 1.5) * p.tilt;
         }
 
